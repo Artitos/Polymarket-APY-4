@@ -50,6 +50,10 @@ const fmtDate = (iso: string | null) => {
 
 const fmtDays = (d: number | null) => (d == null ? "—" : d < 0 ? "fin." : `${d}d`);
 
+// Formato de montos chicos (rewards): 2 decimales si ≥1, si no 4.
+const fmtReward = (n: number) =>
+  n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`;
+
 export default function Page() {
   const [minApy, setMinApy] = useState("4");
   const [minProb, setMinProb] = useState("0");
@@ -103,6 +107,38 @@ export default function Page() {
   }, [autoRefresh, runScan]);
 
   const rows = data?.opportunities ?? [];
+
+  // ---- Calculadora de rewards ----
+  const [deposit, setDeposit] = useState("1000");
+  const [calcApy, setCalcApy] = useState("4");
+  const [calcDays, setCalcDays] = useState("30");
+  const [calcMarket, setCalcMarket] = useState<string | null>(null);
+  const [calcPrice, setCalcPrice] = useState<number | null>(null);
+  const calcRef = useRef<HTMLDivElement | null>(null);
+
+  // Carga los datos de un market del scanner en la calculadora.
+  const loadIntoCalc = (r: Opportunity) => {
+    if (r.holdingApy != null) setCalcApy(r.holdingApy.toFixed(2));
+    if (r.daysToResolution != null && r.daysToResolution > 0) {
+      setCalcDays(String(Math.ceil(r.daysToResolution)));
+    }
+    setCalcMarket(r.question);
+    setCalcPrice(r.favoritePrice > 0 && r.favoritePrice < 1 ? r.favoritePrice : null);
+    calcRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Cálculos. El holding reward se paga diariamente sobre el valor de la
+  // posición (interés simple: no se reinvierte en la posición).
+  const D = Math.max(0, Number(deposit) || 0);
+  const A = Math.max(0, Number(calcApy) || 0);
+  const days = Math.max(0, Number(calcDays) || 0);
+  const dailyReward = (D * (A / 100)) / 365;
+  const totalReward = D * (A / 100) * (days / 365);
+  const monthlyReward = dailyReward * 30;
+  const returnPct = D > 0 ? (totalReward / D) * 100 : 0;
+  const finalValue = D + totalReward;
+  // Ganancia extra por resolución si comprás el favorito a calcPrice y resuelve a tu favor.
+  const resolutionGain = calcPrice != null ? D * ((1 - calcPrice) / calcPrice) : null;
 
   return (
     <div className="shell">
@@ -291,6 +327,13 @@ export default function Page() {
                   <td className="num">{fmtUSD(r.liquidity)}</td>
                   <td className="num hide-sm dim">{fmtUSD(r.volume24hr)}</td>
                   <td className="num">
+                    <button
+                      className="btn-mini"
+                      title="Calcular rewards con este market"
+                      onClick={() => loadIntoCalc(r)}
+                    >
+                      calc
+                    </button>
                     <a className="ext" href={r.url} target="_blank" rel="noreferrer">
                       ↗
                     </a>
@@ -301,6 +344,100 @@ export default function Page() {
           </table>
         )}
       </div>
+
+      <section className="calc" ref={calcRef}>
+        <div className="calc-head">
+          <h2>
+            Calculadora de <span className="accent">rewards</span>
+          </h2>
+          <p>
+            ¿Cuánto rinde tu depósito farmeando el holding reward? Tocá{" "}
+            <span className="kbd">calc</span> en cualquier market de arriba para cargar
+            su APY y sus días restantes, o ajustá los valores a mano.
+          </p>
+        </div>
+
+        {calcMarket && (
+          <div className="calc-loaded">
+            Cargado desde: <b>{calcMarket}</b>
+            {calcPrice != null && (
+              <span className="dim">
+                {" "}
+                · favorito a {(calcPrice * 100).toFixed(1)}¢
+              </span>
+            )}
+          </div>
+        )}
+
+        <div className="calc-inputs">
+          <div className="field">
+            <label>Depósito (USDC)</label>
+            <input
+              type="number"
+              value={deposit}
+              min={0}
+              step={100}
+              onChange={(e) => setDeposit(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label>APY del reward (%)</label>
+            <input
+              type="number"
+              value={calcApy}
+              min={0}
+              step={0.5}
+              onChange={(e) => setCalcApy(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label>Días a mantener</label>
+            <input
+              type="number"
+              value={calcDays}
+              min={0}
+              step={1}
+              onChange={(e) => setCalcDays(e.target.value)}
+            />
+            <span className="hint">
+              {calcMarket ? "= días hasta que cierra el market" : "editá según tu plan"}
+            </span>
+          </div>
+        </div>
+
+        <div className="calc-grid">
+          <div className="stat">
+            <div className="stat-label">Reward por día</div>
+            <div className="stat-value">{fmtReward(dailyReward)}</div>
+            <div className="stat-sub">USDC / día</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Reward por mes</div>
+            <div className="stat-value">{fmtReward(monthlyReward)}</div>
+            <div className="stat-sub">~30 días</div>
+          </div>
+          <div className="stat highlight">
+            <div className="stat-label">Reward total en {days || 0} días</div>
+            <div className="stat-value">{fmtReward(totalReward)}</div>
+            <div className="stat-sub">+{returnPct.toFixed(2)}% sobre tu depósito</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Valor final</div>
+            <div className="stat-value">{fmtReward(finalValue)}</div>
+            <div className="stat-sub">depósito + rewards</div>
+          </div>
+        </div>
+
+        {resolutionGain != null && (
+          <div className="calc-extra">
+            <b>Extra por resolución (no garantizado):</b> si con esos {fmtReward(D)} comprás
+            el outcome favorito a {(calcPrice! * 100).toFixed(1)}¢ y el market resuelve a tu
+            favor, al llegar a $1 ganás otros{" "}
+            <span className="cyan">{fmtReward(resolutionGain)}</span> aparte de los rewards.
+            Si resuelve en contra, perdés el depósito — por eso no se suma al total de arriba.
+          </div>
+        )}
+      </section>
 
       <div className="disclaimer">
         <b>Leé esto.</b> El <b>Holding Reward</b> (hoy 4.00% anualizado) lo paga
