@@ -34,6 +34,35 @@ interface ScanResponse {
   opportunities?: Opportunity[];
 }
 
+interface LiquidityMarket {
+  id: string;
+  question: string;
+  slug: string;
+  url: string;
+  dailyPool: number;
+  maxSpreadCents: number;
+  minSize: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  currentSpreadCents: number | null;
+  midpoint: number | null;
+  liquidity: number;
+  volume24hr: number;
+  endDate: string | null;
+  daysToResolution: number | null;
+  acceptingOrders: boolean;
+  enableOrderBook: boolean;
+}
+
+interface LiquidityResponse {
+  ok: boolean;
+  error?: string;
+  scannedAt?: string;
+  marketsScanned?: number;
+  found?: number;
+  markets?: LiquidityMarket[];
+}
+
 const fmtUSD = (n: number) =>
   n >= 1_000_000
     ? `$${(n / 1_000_000).toFixed(1)}M`
@@ -139,6 +168,86 @@ export default function Page() {
   const finalValue = D + totalReward;
   // Ganancia extra por resolución si comprás el favorito a calcPrice y resuelve a tu favor.
   const resolutionGain = calcPrice != null ? D * ((1 - calcPrice) / calcPrice) : null;
+
+  // ============ LIQUIDITY REWARDS (scanner + calculadora) ============
+  const [liqMinPool, setLiqMinPool] = useState("10");
+  const [liqMaxPages, setLiqMaxPages] = useState("6");
+  const [liqData, setLiqData] = useState<LiquidityResponse | null>(null);
+  const [liqLoading, setLiqLoading] = useState(false);
+  const [liqError, setLiqError] = useState<string | null>(null);
+  const [liqAuto, setLiqAuto] = useState(false);
+  const liqTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const runLiqScan = useCallback(async () => {
+    setLiqLoading(true);
+    setLiqError(null);
+    const params = new URLSearchParams({
+      mode: "liquidity",
+      minPool: liqMinPool,
+      maxPages: liqMaxPages,
+    });
+    try {
+      const res = await fetch(`/api/scan?${params.toString()}`, { cache: "no-store" });
+      const json: LiquidityResponse = await res.json();
+      if (!json.ok) throw new Error(json.error || "Error desconocido");
+      setLiqData(json);
+    } catch (e) {
+      setLiqError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLiqLoading(false);
+    }
+  }, [liqMinPool, liqMaxPages]);
+
+  useEffect(() => {
+    runLiqScan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (liqTimer.current) clearInterval(liqTimer.current);
+    // Actualización frecuente: cada 60s (los pools y la competencia cambian seguido).
+    if (liqAuto) liqTimer.current = setInterval(runLiqScan, 60_000);
+    return () => {
+      if (liqTimer.current) clearInterval(liqTimer.current);
+    };
+  }, [liqAuto, runLiqScan]);
+
+  const liqRows = liqData?.markets ?? [];
+
+  // ---- Calculadora de liquidity rewards ----
+  const [lcPool, setLcPool] = useState("100");
+  const [lcCapital, setLcCapital] = useState("1000");
+  const [lcSpread, setLcSpread] = useState("1");
+  const [lcMaxSpread, setLcMaxSpread] = useState("3");
+  const [lcCompeting, setLcCompeting] = useState("5000");
+  const [lcDays, setLcDays] = useState("7");
+  const [lcMarket, setLcMarket] = useState<string | null>(null);
+  const liqCalcRef = useRef<HTMLDivElement | null>(null);
+
+  const loadIntoLiqCalc = (m: LiquidityMarket) => {
+    if (m.dailyPool > 0) setLcPool(String(Math.round(m.dailyPool)));
+    if (m.maxSpreadCents > 0) setLcMaxSpread(String(m.maxSpreadCents));
+    if (m.daysToResolution != null && m.daysToResolution > 0) {
+      setLcDays(String(Math.ceil(m.daysToResolution)));
+    }
+    setLcMarket(m.question);
+    liqCalcRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Score cuadrático: ((maxSpread - tuSpread) / maxSpread)^2 (0 si te pasás del max).
+  const lcV = Math.max(0.0001, Number(lcMaxSpread) || 0);
+  const lcS = Math.max(0, Number(lcSpread) || 0);
+  const scoreFactor = lcS <= lcV ? Math.pow((lcV - lcS) / lcV, 2) : 0;
+  const lcCap = Math.max(0, Number(lcCapital) || 0);
+  const lcComp = Math.max(0, Number(lcCompeting) || 0);
+  const lcPoolN = Math.max(0, Number(lcPool) || 0);
+  const lcDaysN = Math.max(0, Number(lcDays) || 0);
+  const yourScore = lcCap * scoreFactor;
+  const poolShare = yourScore + lcComp > 0 ? yourScore / (yourScore + lcComp) : 0;
+  const liqDaily = lcPoolN * poolShare;
+  const liqPeriod = liqDaily * lcDaysN;
+  const liqMonthly = liqDaily * 30;
+  const liqApr = lcCap > 0 ? (liqDaily * 365) / lcCap * 100 : 0;
 
   return (
     <div className="shell">
@@ -437,6 +546,242 @@ export default function Page() {
             Si resuelve en contra, perdés el depósito — por eso no se suma al total de arriba.
           </div>
         )}
+      </section>
+
+      <header className="masthead" style={{ marginTop: 44, borderTop: "1px solid var(--border)", paddingTop: 28 }}>
+        <div className="brand">
+          <span className="dot" style={{ background: "var(--cyan)", boxShadow: "0 0 12px var(--cyan)" }} />
+          <div>
+            <h1>
+              LIQUIDITY<span className="accent" style={{ color: "var(--cyan)" }}>·</span>REWARDS
+            </h1>
+            <div className="sub">Pool diario por poner órdenes límite cerca del mid</div>
+          </div>
+        </div>
+        <p className="tagline">
+          Otro programa, otra lógica: Polymarket reparte un <b style={{ color: "var(--cyan)" }}>pool diario</b>{" "}
+          entre quienes dan liquidez. Lo que ganás depende de tu spread y de la competencia.
+        </p>
+      </header>
+
+      <section className="controls" style={{ marginTop: 18 }}>
+        <div className="field">
+          <label>Pool diario mín. (USDC)</label>
+          <input
+            type="number"
+            value={liqMinPool}
+            min={0}
+            step={10}
+            onChange={(e) => setLiqMinPool(e.target.value)}
+          />
+          <span className="hint">descarta pools chicos</span>
+        </div>
+        <div className="field">
+          <label>Páginas a escanear</label>
+          <select value={liqMaxPages} onChange={(e) => setLiqMaxPages(e.target.value)}>
+            <option value="3">3 · ~1500 markets</option>
+            <option value="6">6 · ~3000 markets</option>
+            <option value="10">10 · ~5000 markets</option>
+            <option value="20">20 · ~10000 markets</option>
+          </select>
+        </div>
+        <div className="actions">
+          <button className="btn cyan-btn" onClick={runLiqScan} disabled={liqLoading}>
+            {liqLoading ? "ESCANEANDO…" : "▸ ESCANEAR POOLS"}
+          </button>
+        </div>
+      </section>
+
+      <div className="statusbar">
+        <span>
+          ESTADO:{" "}
+          {liqLoading ? (
+            <b>
+              <span className="spinner" />
+              escaneando
+            </b>
+          ) : liqError ? (
+            <b className="err">error</b>
+          ) : (
+            <b className="ok">listo</b>
+          )}
+        </span>
+        <span>
+          MARKETS ESCANEADOS: <b>{liqData?.marketsScanned ?? "—"}</b>
+        </span>
+        <span>
+          CON POOL: <b style={{ color: "var(--cyan)" }}>{liqData?.found ?? "—"}</b>
+        </span>
+        <span>
+          ÚLTIMO SCAN:{" "}
+          <b>{liqData?.scannedAt ? new Date(liqData.scannedAt).toLocaleTimeString("es-AR") : "—"}</b>
+        </span>
+        <label className="toggle">
+          <input type="checkbox" checked={liqAuto} onChange={(e) => setLiqAuto(e.target.checked)} />
+          auto-refresh (60s)
+        </label>
+      </div>
+
+      <div className="tablewrap">
+        {liqError ? (
+          <div className="state">
+            <div className="big">⚠ Falló el escaneo</div>
+            <div>{liqError}</div>
+          </div>
+        ) : liqLoading && liqRows.length === 0 ? (
+          <div className="state">
+            <div className="big">
+              <span className="spinner" />
+              Buscando pools de liquidez…
+            </div>
+          </div>
+        ) : liqRows.length === 0 ? (
+          <div className="state">
+            <div className="big">Sin resultados</div>
+            <div>No se detectaron markets con liquidity rewards. Bajá el pool mínimo o subí las páginas.</div>
+          </div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th className="num">Pool/día</th>
+                <th className="num hide-sm">Max spread</th>
+                <th className="num hide-sm">Min shares</th>
+                <th className="num hide-sm">Spread actual</th>
+                <th className="num">Liquidez</th>
+                <th className="num hide-sm">Días</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {liqRows.map((m, i) => (
+                <tr key={m.id} style={{ animationDelay: `${Math.min(i * 18, 360)}ms` }}>
+                  <td className="q">
+                    <a href={m.url} target="_blank" rel="noreferrer">
+                      {m.question}
+                    </a>
+                    <div className="slug">
+                      {m.slug || "—"}
+                      {!m.acceptingOrders && (
+                        <span className="pill" style={{ marginLeft: 8 }}>
+                          no acepta órdenes
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="num">
+                    <span style={{ color: "var(--cyan)", fontWeight: 700, fontSize: 15 }}>
+                      {fmtUSD(m.dailyPool)}
+                    </span>
+                  </td>
+                  <td className="num hide-sm dim">
+                    {m.maxSpreadCents > 0 ? `±${m.maxSpreadCents}¢` : "—"}
+                  </td>
+                  <td className="num hide-sm dim">{m.minSize > 0 ? m.minSize : "—"}</td>
+                  <td className="num hide-sm dim">
+                    {m.currentSpreadCents != null ? `${m.currentSpreadCents}¢` : "—"}
+                  </td>
+                  <td className="num">{fmtUSD(m.liquidity)}</td>
+                  <td className="num hide-sm dim">{fmtDays(m.daysToResolution)}</td>
+                  <td className="num">
+                    <button
+                      className="btn-mini"
+                      title="Calcular con este market"
+                      onClick={() => loadIntoLiqCalc(m)}
+                    >
+                      calc
+                    </button>
+                    <a className="ext" href={m.url} target="_blank" rel="noreferrer">
+                      ↗
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <section className="calc cyan-calc" ref={liqCalcRef}>
+        <div className="calc-head">
+          <h2>
+            Calculadora de <span className="accent" style={{ color: "var(--cyan)" }}>liquidity rewards</span>
+          </h2>
+          <p>
+            Estimación basada en la fórmula real de Polymarket: tu score ={" "}
+            <span className="kbd">((maxSpread − tuSpread) / maxSpread)² × capital</span>, y tu pago ={" "}
+            <span className="kbd">pool × (tu score / score total)</span>. Tocá{" "}
+            <span className="kbd">calc</span> en un market para cargar su pool y max spread.
+          </p>
+        </div>
+
+        {lcMarket && (
+          <div className="calc-loaded" style={{ borderLeftColor: "var(--cyan)" }}>
+            Cargado desde: <b>{lcMarket}</b>
+          </div>
+        )}
+
+        <div className="calc-inputs">
+          <div className="field">
+            <label>Pool diario (USDC)</label>
+            <input type="number" value={lcPool} min={0} step={10} onChange={(e) => setLcPool(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Tu capital (USDC)</label>
+            <input type="number" value={lcCapital} min={0} step={100} onChange={(e) => setLcCapital(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Tu spread del mid (¢)</label>
+            <input type="number" value={lcSpread} min={0} step={0.5} onChange={(e) => setLcSpread(e.target.value)} />
+            <span className="hint">más cerca = más score</span>
+          </div>
+          <div className="field">
+            <label>Max spread del market (¢)</label>
+            <input type="number" value={lcMaxSpread} min={0.5} step={0.5} onChange={(e) => setLcMaxSpread(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Competencia (USDC)</label>
+            <input type="number" value={lcCompeting} min={0} step={500} onChange={(e) => setLcCompeting(e.target.value)} />
+            <span className="hint">liquidez de los demás LPs</span>
+          </div>
+          <div className="field">
+            <label>Días a operar</label>
+            <input type="number" value={lcDays} min={0} step={1} onChange={(e) => setLcDays(e.target.value)} />
+          </div>
+        </div>
+
+        <div className="calc-grid">
+          <div className="stat">
+            <div className="stat-label">Eficiencia del spread</div>
+            <div className="stat-value" style={{ color: "var(--cyan)" }}>{(scoreFactor * 100).toFixed(1)}%</div>
+            <div className="stat-sub">qué tan bien puntúa tu orden</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Tu parte del pool</div>
+            <div className="stat-value" style={{ color: "var(--cyan)" }}>{(poolShare * 100).toFixed(2)}%</div>
+            <div className="stat-sub">vs el resto de LPs</div>
+          </div>
+          <div className="stat highlight cyan-hl">
+            <div className="stat-label">Ganancia por día</div>
+            <div className="stat-value" style={{ color: "var(--cyan)" }}>{fmtReward(liqDaily)}</div>
+            <div className="stat-sub">USDC / día estimado</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">En {lcDaysN || 0} días</div>
+            <div className="stat-value">{fmtReward(liqPeriod)}</div>
+            <div className="stat-sub">≈ {fmtReward(liqMonthly)}/mes · {liqApr.toFixed(0)}% APR s/ capital</div>
+          </div>
+        </div>
+
+        <div className="calc-extra" style={{ borderLeftColor: "var(--amber)" }}>
+          <b style={{ color: "var(--amber)" }}>Es una estimación, no una promesa.</b> Las rewards
+          reales dependen de la competencia minuto a minuto (el campo "Competencia" es tu mejor
+          adivinanza) y del muestreo aleatorio de Polymarket. Además, poner órdenes te deja con
+          <b style={{ color: "var(--amber)" }}> posición real</b>: si el precio se mueve en contra,
+          la pérdida puede comerse las rewards. Empezá con poco capital en markets de poca
+          competencia para calibrar tu "Competencia" con datos reales.
+        </div>
       </section>
 
       <div className="disclaimer">
