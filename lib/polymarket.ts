@@ -369,3 +369,154 @@ export async function scan(params: ScanParams): Promise<ScanResult> {
     opportunities,
   };
 }
+
+/* ====================================================================== */
+/*  LIQUIDITY REWARDS (programa de órdenes límite / market making)        */
+/*  Distinto al holding reward: hay un pool diario por market que se       */
+/*  reparte entre quienes ponen órdenes cerca del midpoint.                */
+/* ====================================================================== */
+
+export interface LiquidityMarket {
+  id: string;
+  question: string;
+  slug: string;
+  url: string;
+  /** Pool de rewards que reparte el market por día (USDC). */
+  dailyPool: number;
+  /** Max spread elegible (en centavos). Órdenes dentro de esta distancia del mid puntúan. */
+  maxSpreadCents: number;
+  /** Tamaño mínimo de orden para calificar (shares). */
+  minSize: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  /** Spread actual del book en centavos. */
+  currentSpreadCents: number | null;
+  midpoint: number | null;
+  liquidity: number;
+  volume24hr: number;
+  endDate: string | null;
+  daysToResolution: number | null;
+  acceptingOrders: boolean;
+  enableOrderBook: boolean;
+}
+
+export interface LiquidityScanResult {
+  scannedAt: string;
+  marketsScanned: number;
+  found: number;
+  markets: LiquidityMarket[];
+}
+
+function extractLiquidity(m: Record<string, unknown>): {
+  eligible: boolean;
+  dailyPool: number;
+  maxSpreadCents: number;
+  minSize: number;
+} {
+  let dailyPool = 0;
+  const cr = m["clobRewards"];
+  if (Array.isArray(cr)) {
+    for (const r of cr as Record<string, unknown>[]) {
+      dailyPool += toNum(
+        r["rewardsDailyRate"] ??
+          r["dailyRate"] ??
+          r["rewards_daily_rate"] ??
+          r["rewardsAmount"] ??
+          0
+      );
+    }
+  }
+  if (dailyPool === 0) {
+    dailyPool = toNum(m["rewardsDailyRate"] ?? m["dailyRewardsRate"] ?? 0);
+  }
+
+  let maxSpreadCents = toNum(m["rewardsMaxSpread"] ?? m["reward_max_spread"] ?? 0);
+  if (maxSpreadCents > 0 && maxSpreadCents <= 1) maxSpreadCents *= 100; // de price-units a centavos
+
+  const minSize = toNum(m["rewardsMinSize"] ?? m["reward_min_size"] ?? 0);
+
+  const eligible =
+    dailyPool > 0 || maxSpreadCents > 0 || (Array.isArray(cr) && cr.length > 0);
+
+  return { eligible, dailyPool, maxSpreadCents, minSize };
+}
+
+export async function scanLiquidity(maxPages: number, minPool: number): Promise<LiquidityScanResult> {
+  const limit = 500;
+  const all: Record<string, unknown>[] = [];
+  for (let page = 0; page < maxPages; page++) {
+    const batch = await fetchMarketsPage(page * limit, limit);
+    if (batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < limit) break;
+  }
+
+  const now = Date.now();
+  const markets: LiquidityMarket[] = [];
+
+  for (const m of all) {
+    const liq = extractLiquidity(m);
+    if (!liq.eligible) continue;
+    if (liq.dailyPool < minPool) continue;
+
+    const prices = parseMaybeJsonArray(m["outcomePrices"]).map((p) => parseFloat(p));
+    let favPrice = 0;
+    prices.forEach((p) => {
+      if (Number.isFinite(p) && p > favPrice) favPrice = p;
+    });
+
+    const bid = m["bestBid"] != null ? toNum(m["bestBid"]) : null;
+    const ask = m["bestAsk"] != null ? toNum(m["bestAsk"]) : null;
+    let midpoint: number | null = null;
+    let currentSpreadCents: number | null = null;
+    if (bid != null && ask != null && bid > 0 && ask > 0) {
+      midpoint = (bid + ask) / 2;
+      currentSpreadCents = Math.round((ask - bid) * 1000) / 10; // a centavos, 1 decimal
+    } else if (favPrice > 0) {
+      midpoint = favPrice;
+    }
+
+    const endRaw = (m["endDate"] ?? m["endDateIso"] ?? m["end_date"]) as string | undefined;
+    let endDate: string | null = endRaw ?? null;
+    let days: number | null = null;
+    if (endRaw) {
+      const t = new Date(endRaw).getTime();
+      if (Number.isFinite(t)) days = Math.round(((t - now) / (1000 * 60 * 60 * 24)) * 10) / 10;
+    }
+
+    let slug = String(m["slug"] ?? "");
+    const events = m["events"];
+    if (Array.isArray(events) && events.length > 0 && (events[0] as any)?.slug) {
+      slug = String((events[0] as any).slug);
+    }
+
+    markets.push({
+      id: String(m["id"] ?? m["conditionId"] ?? slug),
+      question: String(m["question"] ?? m["title"] ?? "(sin título)"),
+      slug,
+      url: slug ? `https://polymarket.com/event/${slug}` : "https://polymarket.com",
+      dailyPool: liq.dailyPool,
+      maxSpreadCents: liq.maxSpreadCents,
+      minSize: liq.minSize,
+      bestBid: bid,
+      bestAsk: ask,
+      currentSpreadCents,
+      midpoint,
+      liquidity: toNum(m["liquidityNum"] ?? m["liquidity"]),
+      volume24hr: toNum(m["volume24hr"] ?? 0),
+      endDate,
+      daysToResolution: days,
+      acceptingOrders: m["acceptingOrders"] === true || m["acceptingOrders"] === "true",
+      enableOrderBook: m["enableOrderBook"] === true || m["enableOrderBook"] === "true",
+    });
+  }
+
+  markets.sort((a, b) => b.dailyPool - a.dailyPool);
+
+  return {
+    scannedAt: new Date().toISOString(),
+    marketsScanned: all.length,
+    found: markets.length,
+    markets,
+  };
+}
