@@ -54,6 +54,7 @@ interface LiquidityMarket {
   daysToResolution: number | null;
   acceptingOrders: boolean;
   enableOrderBook: boolean;
+  clobTokenIds: string[];
 }
 
 interface LiquidityResponse {
@@ -250,13 +251,60 @@ export default function Page() {
   const [lcMarket, setLcMarket] = useState<string | null>(null);
   const liqCalcRef = useRef<HTMLDivElement | null>(null);
 
+  // Competencia en vivo (order book del CLOB)
+  const [lcToken, setLcToken] = useState<string | null>(null);
+  const [compLoading, setCompLoading] = useState(false);
+  const [compInfo, setCompInfo] = useState<string | null>(null);
+  const [compAuto, setCompAuto] = useState(false);
+  const compTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchCompetition = useCallback(async (tokenId: string, maxSpreadCents: string) => {
+    setCompLoading(true);
+    try {
+      const p = new URLSearchParams({ mode: "book", tokenId, maxSpread: maxSpreadCents });
+      const res = await fetch(`/api/scan?${p.toString()}`, { cache: "no-store" });
+      const j = await res.json();
+      if (j.ok && typeof j.effectiveScore === "number") {
+        setLcCompeting(String(j.effectiveScore));
+        setCompInfo(
+          j.orders > 0
+            ? `$${Math.round(j.qualifyingUsdc).toLocaleString("es-AR")} en ${j.orders} órdenes cerca del mid · ${new Date().toLocaleTimeString("es-AR")}`
+            : "sin órdenes calificando ahora mismo"
+        );
+      } else {
+        setCompInfo("no se pudo leer el order book");
+      }
+    } catch {
+      setCompInfo("no se pudo leer el order book");
+    } finally {
+      setCompLoading(false);
+    }
+  }, []);
+
   const loadIntoLiqCalc = (m: LiquidityMarket) => {
+    const maxS = m.maxSpreadCents > 0 ? String(m.maxSpreadCents) : "3";
     if (m.dailyPool > 0) setLcPool(String(Math.round(m.dailyPool)));
-    if (m.maxSpreadCents > 0) setLcMaxSpread(String(m.maxSpreadCents));
+    if (m.maxSpreadCents > 0) setLcMaxSpread(maxS);
     if (m.daysToResolution != null && m.daysToResolution > 0) setLcDays(String(Math.ceil(m.daysToResolution)));
     setLcMarket(m.question);
+    const token = m.clobTokenIds?.[0] ?? null;
+    setLcToken(token);
+    setCompInfo(null);
+    if (token) fetchCompetition(token, maxS);
+    else setCompInfo("este market no expone order book");
     liqCalcRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+  // Auto-actualización de la competencia cada 60s.
+  useEffect(() => {
+    if (compTimer.current) clearInterval(compTimer.current);
+    if (compAuto && lcToken) {
+      compTimer.current = setInterval(() => fetchCompetition(lcToken, lcMaxSpread), 60_000);
+    }
+    return () => {
+      if (compTimer.current) clearInterval(compTimer.current);
+    };
+  }, [compAuto, lcToken, lcMaxSpread, fetchCompetition]);
 
   const lcV = Math.max(0.0001, Number(lcMaxSpread) || 0);
   const lcS = Math.max(0, Number(lcSpread) || 0);
@@ -566,7 +614,25 @@ export default function Page() {
                 <div className="field"><label>Tu capital (USDC)</label><input type="number" value={lcCapital} min={0} step={100} onChange={(e) => setLcCapital(e.target.value)} /></div>
                 <div className="field"><label>Tu spread del mid (¢)</label><input type="number" value={lcSpread} min={0} step={0.5} onChange={(e) => setLcSpread(e.target.value)} /><span className="hint">más cerca = más score</span></div>
                 <div className="field"><label>Max spread (¢)</label><input type="number" value={lcMaxSpread} min={0.5} step={0.5} onChange={(e) => setLcMaxSpread(e.target.value)} /></div>
-                <div className="field"><label>Competencia (USDC)</label><input type="number" value={lcCompeting} min={0} step={500} onChange={(e) => setLcCompeting(e.target.value)} /><span className="hint">liquidez de otros LPs</span></div>
+                <div className="field">
+                  <label>Competencia (auto-detectada)</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input style={{ flex: 1 }} type="number" value={lcCompeting} min={0} step={500} onChange={(e) => setLcCompeting(e.target.value)} />
+                    <button
+                      className="btn-mini"
+                      style={{ margin: 0, padding: "0 12px" }}
+                      disabled={!lcToken || compLoading}
+                      title="Actualizar desde el order book en vivo"
+                      onClick={() => lcToken && fetchCompetition(lcToken, lcMaxSpread)}
+                    >
+                      {compLoading ? "…" : "↻"}
+                    </button>
+                  </div>
+                  <span className="hint">{compInfo ?? "tocá calc en un market para leerlo del order book"}</span>
+                  <label className="toggle" style={{ marginTop: 2 }}>
+                    <input type="checkbox" checked={compAuto} onChange={(e) => setCompAuto(e.target.checked)} disabled={!lcToken} /> auto 60s
+                  </label>
+                </div>
                 <div className="field"><label>Días a operar</label><input type="number" value={lcDays} min={0} step={1} onChange={(e) => setLcDays(e.target.value)} /></div>
               </div>
               <div className="stats">
@@ -576,7 +642,7 @@ export default function Page() {
                 <div className="stat"><div className="lbl">En {lcDaysN || 0} días</div><div className="val">{fmtReward(liqPeriod)}</div><div className="sub">≈ {fmtReward(liqMonthly)}/mes · {liqApr.toFixed(0)}% APR</div></div>
               </div>
               <div className="note">
-                <b>Es una estimación, no una promesa.</b> Las rewards reales dependen de la competencia minuto a minuto (el campo "Competencia" es tu mejor adivinanza) y del muestreo aleatorio de Polymarket. Poner órdenes te deja con <b>posición real</b>: si el precio se mueve en contra, la pérdida puede comerse las rewards. Empezá con poco capital en markets de poca competencia para calibrar.
+                <b>Es una estimación, no una promesa.</b> La "Competencia" ahora se lee del order book en vivo (la liquidez real de otros LPs cerca del mid), pero cambia minuto a minuto y el muestreo de Polymarket es aleatorio, así que tomalo como una foto del momento — usá el ↻ o el auto para refrescarla. Poner órdenes te deja con <b>posición real</b>: si el precio se mueve en contra, la pérdida puede comerse las rewards.
               </div>
             </div>
           </>
