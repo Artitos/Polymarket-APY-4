@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     }
 
     const params: ScanParams = {
-      minApy: clamp(num(sp.get("minApy"), 4), 0, 1000),
+      minApy: clamp(num(sp.get("minApy"), 3.25), 0, 1000),
       minProb: clamp(num(sp.get("minProb"), 0), 0, 100),
       minLiquidity: Math.max(0, num(sp.get("minLiquidity"), 0)),
       maxPages: clamp(num(sp.get("maxPages"), 6), 1, 20),
