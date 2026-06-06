@@ -398,6 +398,8 @@ export interface LiquidityMarket {
   daysToResolution: number | null;
   acceptingOrders: boolean;
   enableOrderBook: boolean;
+  /** IDs de los tokens (YES/NO) para consultar el order book en el CLOB. */
+  clobTokenIds: string[];
 }
 
 export interface LiquidityScanResult {
@@ -508,6 +510,7 @@ export async function scanLiquidity(maxPages: number, minPool: number): Promise<
       daysToResolution: days,
       acceptingOrders: m["acceptingOrders"] === true || m["acceptingOrders"] === "true",
       enableOrderBook: m["enableOrderBook"] === true || m["enableOrderBook"] === "true",
+      clobTokenIds: parseMaybeJsonArray(m["clobTokenIds"]),
     });
   }
 
@@ -518,5 +521,77 @@ export async function scanLiquidity(maxPages: number, minPool: number): Promise<
     marketsScanned: all.length,
     found: markets.length,
     markets,
+  };
+}
+
+/* ====================================================================== */
+/*  COMPETENCIA EN VIVO (order book del CLOB)                              */
+/*  Lee las órdenes reales cerca del midpoint y calcula cuánta liquidez    */
+/*  está compitiendo por el pool de rewards de ese market.                 */
+/* ====================================================================== */
+
+const CLOB_BASE = "https://clob.polymarket.com";
+
+export interface BookCompetition {
+  /** Suma de price×size de las órdenes dentro del max spread (USDC nominal). */
+  qualifyingUsdc: number;
+  /** Score efectivo competidor: suma de S(v,spread)×price×size. Es lo que usa la calculadora. */
+  effectiveScore: number;
+  midpoint: number | null;
+  /** Cantidad de órdenes que califican. */
+  orders: number;
+}
+
+export async function fetchBookCompetition(
+  tokenId: string,
+  maxSpreadCents: number
+): Promise<BookCompetition> {
+  const v = maxSpreadCents > 0 ? maxSpreadCents : 3;
+  const res = await fetch(`${CLOB_BASE}/book?token_id=${encodeURIComponent(tokenId)}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`CLOB book ${res.status}`);
+  const data = await res.json();
+
+  const bids = Array.isArray(data?.bids) ? data.bids : [];
+  const asks = Array.isArray(data?.asks) ? data.asks : [];
+
+  const prices = (arr: any[]) => arr.map((o) => parseFloat(o?.price)).filter((x) => Number.isFinite(x));
+  const bidPrices = prices(bids);
+  const askPrices = prices(asks);
+  const topBid = bidPrices.length ? Math.max(...bidPrices) : NaN;
+  const lowAsk = askPrices.length ? Math.min(...askPrices) : NaN;
+
+  let mid: number | null = null;
+  if (Number.isFinite(topBid) && Number.isFinite(lowAsk)) mid = (topBid + lowAsk) / 2;
+  else if (Number.isFinite(topBid)) mid = topBid;
+  else if (Number.isFinite(lowAsk)) mid = lowAsk;
+
+  if (mid == null) return { qualifyingUsdc: 0, effectiveScore: 0, midpoint: null, orders: 0 };
+
+  let qualifyingUsdc = 0;
+  let effectiveScore = 0;
+  let orders = 0;
+
+  const consider = (price: number, size: number) => {
+    if (!Number.isFinite(price) || !Number.isFinite(size) || size <= 0) return;
+    const sCents = Math.abs(price - (mid as number)) * 100;
+    if (sCents > v) return;
+    const S = Math.pow((v - sCents) / v, 2);
+    const usdc = price * size;
+    qualifyingUsdc += usdc;
+    effectiveScore += S * usdc;
+    orders++;
+  };
+
+  for (const o of bids) consider(parseFloat(o?.price), parseFloat(o?.size));
+  for (const o of asks) consider(parseFloat(o?.price), parseFloat(o?.size));
+
+  return {
+    qualifyingUsdc: Math.round(qualifyingUsdc),
+    effectiveScore: Math.round(effectiveScore),
+    midpoint: mid,
+    orders,
   };
 }
