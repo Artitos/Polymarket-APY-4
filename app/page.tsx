@@ -247,7 +247,8 @@ export default function Page() {
   const [lcSpread, setLcSpread] = useState("1");
   const [lcMaxSpread, setLcMaxSpread] = useState("3");
   const [lcCompeting, setLcCompeting] = useState("5000");
-  const [lcDays, setLcDays] = useState("7");
+  const [lcDurVal, setLcDurVal] = useState("7");
+  const [lcDurUnit, setLcDurUnit] = useState<"min" | "hr" | "day">("day");
   const [lcMarket, setLcMarket] = useState<string | null>(null);
   const liqCalcRef = useRef<HTMLDivElement | null>(null);
 
@@ -285,7 +286,10 @@ export default function Page() {
     const maxS = m.maxSpreadCents > 0 ? String(m.maxSpreadCents) : "3";
     if (m.dailyPool > 0) setLcPool(String(Math.round(m.dailyPool)));
     if (m.maxSpreadCents > 0) setLcMaxSpread(maxS);
-    if (m.daysToResolution != null && m.daysToResolution > 0) setLcDays(String(Math.ceil(m.daysToResolution)));
+    if (m.daysToResolution != null && m.daysToResolution > 0) {
+      setLcDurVal(String(Math.ceil(m.daysToResolution)));
+      setLcDurUnit("day");
+    }
     setLcMarket(m.question);
     const token = m.clobTokenIds?.[0] ?? null;
     setLcToken(token);
@@ -312,11 +316,13 @@ export default function Page() {
   const lcCap = Math.max(0, Number(lcCapital) || 0);
   const lcComp = Math.max(0, Number(lcCompeting) || 0);
   const lcPoolN = Math.max(0, Number(lcPool) || 0);
-  const lcDaysN = Math.max(0, Number(lcDays) || 0);
+  const durVal = Math.max(0, Number(lcDurVal) || 0);
+  const durDays = durVal * (lcDurUnit === "min" ? 1 / (60 * 24) : lcDurUnit === "hr" ? 1 / 24 : 1);
+  const unitLabel = lcDurUnit === "min" ? "min" : lcDurUnit === "hr" ? "hs" : "días";
   const yourScore = lcCap * scoreFactor;
   const poolShare = yourScore + lcComp > 0 ? yourScore / (yourScore + lcComp) : 0;
   const liqDaily = lcPoolN * poolShare;
-  const liqPeriod = liqDaily * lcDaysN;
+  const liqPeriod = liqDaily * durDays;
   const liqMonthly = liqDaily * 30;
   const liqApr = lcCap > 0 ? ((liqDaily * 365) / lcCap) * 100 : 0;
 
@@ -633,13 +639,24 @@ export default function Page() {
                     <input type="checkbox" checked={compAuto} onChange={(e) => setCompAuto(e.target.checked)} disabled={!lcToken} /> auto 60s
                   </label>
                 </div>
-                <div className="field"><label>Días a operar</label><input type="number" value={lcDays} min={0} step={1} onChange={(e) => setLcDays(e.target.value)} /></div>
+                <div className="field">
+                  <label>Duración</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input style={{ flex: 1, minWidth: 0 }} type="number" value={lcDurVal} min={0} step={1} onChange={(e) => setLcDurVal(e.target.value)} />
+                    <select style={{ flex: "0 0 auto" }} value={lcDurUnit} onChange={(e) => setLcDurUnit(e.target.value as "min" | "hr" | "day")}>
+                      <option value="min">min</option>
+                      <option value="hr">horas</option>
+                      <option value="day">días</option>
+                    </select>
+                  </div>
+                  <span className="hint">cuánto tiempo tendrás las órdenes</span>
+                </div>
               </div>
               <div className="stats">
                 <div className="stat"><div className="lbl">Eficiencia del spread</div><div className="val" style={{ color: "var(--accent)" }}>{(scoreFactor * 100).toFixed(1)}%</div><div className="sub">qué tan bien puntúa</div></div>
                 <div className="stat"><div className="lbl">Tu parte del pool</div><div className="val" style={{ color: "var(--accent)" }}>{(poolShare * 100).toFixed(2)}%</div><div className="sub">vs el resto de LPs</div></div>
                 <div className="stat lead"><div className="lbl">Ganancia por día</div><div className="val">{fmtReward(liqDaily)}</div><div className="sub">USDC / día estimado</div></div>
-                <div className="stat"><div className="lbl">En {lcDaysN || 0} días</div><div className="val">{fmtReward(liqPeriod)}</div><div className="sub">≈ {fmtReward(liqMonthly)}/mes · {liqApr.toFixed(0)}% APR</div></div>
+                <div className="stat"><div className="lbl">En {durVal || 0} {unitLabel}</div><div className="val">{fmtReward(liqPeriod)}</div><div className="sub">≈ {fmtReward(liqMonthly)}/mes · {liqApr.toFixed(0)}% APR</div></div>
               </div>
               <div className="note">
                 <b>Es una estimación, no una promesa.</b> La "Competencia" ahora se lee del order book en vivo (la liquidez real de otros LPs cerca del mid), pero cambia minuto a minuto y el muestreo de Polymarket es aleatorio, así que tomalo como una foto del momento — usá el ↻ o el auto para refrescarla. Poner órdenes te deja con <b>posición real</b>: si el precio se mueve en contra, la pérdida puede comerse las rewards.
