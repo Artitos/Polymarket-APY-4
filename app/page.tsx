@@ -83,6 +83,28 @@ const fmtDays = (d: number | null) => (d == null ? "—" : d < 0 ? "fin." : `${d
 
 const fmtReward = (n: number) => (n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(4)}`);
 
+type Dir = "asc" | "desc";
+
+// Ordena por una clave; los valores nulos van siempre al final.
+function sortBy<T>(arr: T[], key: keyof T, dir: Dir): T[] {
+  return [...arr].sort((a, b) => {
+    const av = a[key] as unknown;
+    const bv = b[key] as unknown;
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    let cmp: number;
+    if (typeof av === "string" && typeof bv === "string") {
+      cmp = av.localeCompare(bv);
+    } else {
+      cmp = Number(av) - Number(bv);
+    }
+    return dir === "asc" ? cmp : -cmp;
+  });
+}
+
+const sortArrow = (active: boolean, dir: Dir) => (active ? (dir === "asc" ? " ↑" : " ↓") : "");
+
 export default function Page() {
   const [tab, setTab] = useState<"holding" | "liquidity">("holding");
 
@@ -135,6 +157,14 @@ export default function Page() {
   }, [autoRefresh, runScan]);
 
   const rows = data?.opportunities ?? [];
+
+  const [holdSort, setHoldSort] = useState<{ key: keyof Opportunity; dir: Dir }>({
+    key: "holdingApy",
+    dir: "desc",
+  });
+  const onSortHold = (key: keyof Opportunity) =>
+    setHoldSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  const sortedRows = sortBy(rows, holdSort.key, holdSort.dir);
 
   // Calculadora de holding rewards
   const [deposit, setDeposit] = useState("1000");
@@ -201,6 +231,14 @@ export default function Page() {
   }, [liqAuto, runLiqScan]);
 
   const liqRows = liqData?.markets ?? [];
+
+  const [liqSort, setLiqSort] = useState<{ key: keyof LiquidityMarket; dir: Dir }>({
+    key: "dailyPool",
+    dir: "desc",
+  });
+  const onSortLiq = (key: keyof LiquidityMarket) =>
+    setLiqSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  const sortedLiqRows = sortBy(liqRows, liqSort.key, liqSort.dir);
 
   // Calculadora de liquidity rewards
   const [lcPool, setLcPool] = useState("100");
@@ -348,18 +386,18 @@ export default function Page() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Market</th>
-                      <th>Favorito</th>
-                      <th className="num">Holding APY</th>
-                      <th className="num hide-sm">Bond APY*</th>
-                      <th className="num hide-sm">Días</th>
-                      <th className="num hide-sm">Fin</th>
-                      <th className="num">Liquidez</th>
+                      <th className={"sortable" + (holdSort.key === "question" ? " active" : "")} onClick={() => onSortHold("question")}>Market{sortArrow(holdSort.key === "question", holdSort.dir)}</th>
+                      <th className={"sortable" + (holdSort.key === "impliedProb" ? " active" : "")} onClick={() => onSortHold("impliedProb")}>Favorito{sortArrow(holdSort.key === "impliedProb", holdSort.dir)}</th>
+                      <th className={"num sortable" + (holdSort.key === "holdingApy" ? " active" : "")} onClick={() => onSortHold("holdingApy")}>Holding APY{sortArrow(holdSort.key === "holdingApy", holdSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (holdSort.key === "bondApy" ? " active" : "")} onClick={() => onSortHold("bondApy")}>Bond APY*{sortArrow(holdSort.key === "bondApy", holdSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (holdSort.key === "daysToResolution" ? " active" : "")} onClick={() => onSortHold("daysToResolution")}>Días{sortArrow(holdSort.key === "daysToResolution", holdSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (holdSort.key === "endDate" ? " active" : "")} onClick={() => onSortHold("endDate")}>Fin{sortArrow(holdSort.key === "endDate", holdSort.dir)}</th>
+                      <th className={"num sortable" + (holdSort.key === "liquidity" ? " active" : "")} onClick={() => onSortHold("liquidity")}>Liquidez{sortArrow(holdSort.key === "liquidity", holdSort.dir)}</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((r, i) => (
+                    {sortedRows.map((r, i) => (
                       <tr key={r.id} style={{ animationDelay: `${Math.min(i * 16, 320)}ms` }}>
                         <td className="q">
                           <a href={r.url} target="_blank" rel="noreferrer">{r.question}</a>
@@ -480,18 +518,18 @@ export default function Page() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Market</th>
-                      <th className="num">Pool/día</th>
-                      <th className="num hide-sm">Max spread</th>
-                      <th className="num hide-sm">Min shares</th>
-                      <th className="num hide-sm">Spread actual</th>
-                      <th className="num">Liquidez</th>
-                      <th className="num hide-sm">Días</th>
+                      <th className={"sortable" + (liqSort.key === "question" ? " active" : "")} onClick={() => onSortLiq("question")}>Market{sortArrow(liqSort.key === "question", liqSort.dir)}</th>
+                      <th className={"num sortable" + (liqSort.key === "dailyPool" ? " active" : "")} onClick={() => onSortLiq("dailyPool")}>Pool/día{sortArrow(liqSort.key === "dailyPool", liqSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (liqSort.key === "maxSpreadCents" ? " active" : "")} onClick={() => onSortLiq("maxSpreadCents")}>Max spread{sortArrow(liqSort.key === "maxSpreadCents", liqSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (liqSort.key === "minSize" ? " active" : "")} onClick={() => onSortLiq("minSize")}>Min shares{sortArrow(liqSort.key === "minSize", liqSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (liqSort.key === "currentSpreadCents" ? " active" : "")} onClick={() => onSortLiq("currentSpreadCents")}>Spread actual{sortArrow(liqSort.key === "currentSpreadCents", liqSort.dir)}</th>
+                      <th className={"num sortable" + (liqSort.key === "liquidity" ? " active" : "")} onClick={() => onSortLiq("liquidity")}>Liquidez{sortArrow(liqSort.key === "liquidity", liqSort.dir)}</th>
+                      <th className={"num hide-sm sortable" + (liqSort.key === "daysToResolution" ? " active" : "")} onClick={() => onSortLiq("daysToResolution")}>Días{sortArrow(liqSort.key === "daysToResolution", liqSort.dir)}</th>
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {liqRows.map((m, i) => (
+                    {sortedLiqRows.map((m, i) => (
                       <tr key={m.id} style={{ animationDelay: `${Math.min(i * 16, 320)}ms` }}>
                         <td className="q">
                           <a href={m.url} target="_blank" rel="noreferrer">{m.question}</a>

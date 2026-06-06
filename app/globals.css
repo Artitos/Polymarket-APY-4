@@ -213,6 +213,9 @@ thead th {
   letter-spacing: 0.02em;
 }
 thead th.num { text-align: right; }
+thead th.sortable { cursor: pointer; user-select: none; transition: color 0.12s; }
+thead th.sortable:hover { color: var(--text); }
+thead th.sortable.active { color: var(--accent); }
 tbody td { padding: 15px 16px; border-bottom: 1px solid var(--border); vertical-align: top; font-size: 13.5px; }
 tbody tr { animation: fade 0.3s ease both; transition: background 0.12s; }
 tbody tr:hover { background: var(--surface); }
