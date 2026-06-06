@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { scan, scanLiquidity, type ScanParams } from "@/lib/polymarket";
+import { scan, scanLiquidity, fetchBookCompetition, type ScanParams } from "@/lib/polymarket";
 
 // Se ejecuta en el server (no en el browser): evita problemas de CORS con el Gamma API.
 export const dynamic = "force-dynamic";
@@ -8,9 +8,23 @@ export const maxDuration = 60; // segundos (límite del plan Hobby de Vercel)
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
-  const mode = sp.get("mode") === "liquidity" ? "liquidity" : "holding";
+  const mode =
+    sp.get("mode") === "liquidity" ? "liquidity" : sp.get("mode") === "book" ? "book" : "holding";
 
   try {
+    if (mode === "book") {
+      const tokenId = sp.get("tokenId") || "";
+      const maxSpread = num(sp.get("maxSpread"), 3);
+      if (!tokenId) {
+        return NextResponse.json({ ok: false, error: "falta tokenId" }, { status: 400 });
+      }
+      const result = await fetchBookCompetition(tokenId, maxSpread);
+      return NextResponse.json(
+        { ok: true, mode, ...result },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
     if (mode === "liquidity") {
       const maxPages = clamp(num(sp.get("maxPages"), 6), 1, 20);
       const minPool = Math.max(0, num(sp.get("minPool"), 0));
