@@ -189,8 +189,8 @@ function detectHoldingReward(market: Record<string, unknown>): {
 
   let assumed = false;
   if (eligible && ratePct == null) {
-    // Hay flag pero sin tasa numérica: asumimos la tasa del programa (4.00%).
-    ratePct = 4.0;
+    // Hay flag pero sin tasa numérica: asumimos la tasa del programa (3.25%).
+    ratePct = 3.25;
     assumed = true;
   }
 
